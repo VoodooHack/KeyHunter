@@ -1,6 +1,6 @@
 """
 ETH Key Scanner - Android App
-Main application file with Kivy UI
+Main application file with Kivy UI + AUTO SCAN MODE
 """
 
 from kivy.app import App
@@ -21,6 +21,7 @@ import os
 import sys
 import importlib.util
 import threading
+import time
 
 # Import the scanner
 from eth_key_scanner import ETHKeyScanner, PatternFilter, NoRepeatingFilter, NoTripleTripleFilter
@@ -77,6 +78,10 @@ class ETHKeyScannerApp(App):
     def build(self):
         self.title = "ETH Key Scanner"
         
+        # Auto scan control
+        self.auto_scanning = False
+        self.stop_auto_scan = False
+        
         # Initialize scanner with default filters
         self.default_filters = {
             'NoRepeating(6)': NoRepeatingFilter(max_repeats=6),
@@ -119,7 +124,7 @@ class ETHKeyScannerApp(App):
         )
         self.filters_layout.bind(minimum_height=self.filters_layout.setter('height'))
         
-        filters_scroll = ScrollView(size_hint=(1, 0.25))
+        filters_scroll = ScrollView(size_hint=(1, 0.2))
         filters_scroll.add_widget(self.filters_layout)
         main_layout.add_widget(filters_scroll)
         
@@ -137,7 +142,7 @@ class ETHKeyScannerApp(App):
         batch_layout = BoxLayout(orientation='horizontal', size_hint_y=None, height=50)
         batch_layout.add_widget(Label(text='Batch Size:', size_hint_x=0.4))
         self.batch_input = TextInput(
-            text='10',
+            text='100',
             multiline=False,
             input_filter='int',
             size_hint_x=0.6
@@ -164,17 +169,40 @@ class ETHKeyScannerApp(App):
         balance_layout.add_widget(self.check_balance)
         main_layout.add_widget(balance_layout)
         
+        # Buttons layout
+        buttons_layout = BoxLayout(orientation='horizontal', size_hint_y=None, height=60, spacing=10)
+        
         # Generate button
         self.generate_btn = Button(
             text='Generate Keys',
-            size_hint_y=None,
-            height=60,
             background_color=(0.2, 0.8, 0.2, 1),
-            font_size='18sp',
+            font_size='16sp',
             bold=True
         )
         self.generate_btn.bind(on_press=self.generate_keys)
-        main_layout.add_widget(self.generate_btn)
+        buttons_layout.add_widget(self.generate_btn)
+        
+        # Auto scan button
+        self.auto_scan_btn = Button(
+            text='AUTO SCAN',
+            background_color=(1, 0.5, 0, 1),
+            font_size='16sp',
+            bold=True
+        )
+        self.auto_scan_btn.bind(on_press=self.toggle_auto_scan)
+        buttons_layout.add_widget(self.auto_scan_btn)
+        
+        main_layout.add_widget(buttons_layout)
+        
+        # Stats display
+        self.stats_label = Label(
+            text='Ready | Generated: 0 | Checked: 0 | Found: 0',
+            size_hint_y=None,
+            height=30,
+            font_size='12sp',
+            color=(0.7, 0.7, 0.7, 1)
+        )
+        main_layout.add_widget(self.stats_label)
         
         # Results/Log area
         results_label = Label(
@@ -187,15 +215,18 @@ class ETHKeyScannerApp(App):
         main_layout.add_widget(results_label)
         
         self.results_text = TextInput(
-            text='Ready to generate keys...\n',
+            text='Ready to generate keys...\nTip: Use AUTO SCAN for continuous searching!\n',
             multiline=True,
             readonly=True,
-            size_hint=(1, 0.3)
+            size_hint=(1, 0.25)
         )
         main_layout.add_widget(self.results_text)
         
         # Populate filters
         self.refresh_filters()
+        
+        # Update stats periodically
+        Clock.schedule_interval(self.update_stats_display, 2.0)
         
         return main_layout
     
@@ -230,8 +261,11 @@ class ETHKeyScannerApp(App):
         # File chooser
         if platform == 'android':
             # On Android, start in external storage
-            from android.storage import primary_external_storage_path
-            initial_path = primary_external_storage_path()
+            try:
+                from android.storage import primary_external_storage_path
+                initial_path = primary_external_storage_path()
+            except:
+                initial_path = '/storage/emulated/0/Download'
         else:
             initial_path = os.path.expanduser('~')
         
@@ -311,6 +345,115 @@ class ETHKeyScannerApp(App):
         self.results_text.text += f"{message}\n"
         # Scroll to bottom
         self.results_text.cursor = (0, 0)
+    
+    def update_stats_display(self, dt):
+        """Update the stats label"""
+        stats = self.scanner.stats
+        status = "🔄 AUTO SCANNING..." if self.auto_scanning else "Ready"
+        self.stats_label.text = f"{status} | Generated: {stats['generated']} | Checked: {stats['checked']} | Found: {stats['with_balance']}"
+    
+    def toggle_auto_scan(self, instance):
+        """Toggle auto scan mode"""
+        if not self.auto_scanning:
+            # Start auto scan
+            self.start_auto_scan()
+        else:
+            # Stop auto scan
+            self.stop_auto_scan_mode()
+    
+    def start_auto_scan(self):
+        """Start automatic continuous scanning"""
+        try:
+            batch_size = int(self.batch_input.text)
+            if batch_size < 1 or batch_size > 10000:
+                self.log("Batch size must be between 1 and 10000")
+                return
+        except:
+            self.log("Invalid batch size")
+            return
+        
+        self.auto_scanning = True
+        self.stop_auto_scan = False
+        
+        # Update UI
+        self.auto_scan_btn.text = "STOP SCAN"
+        self.auto_scan_btn.background_color = (0.8, 0.2, 0.2, 1)
+        self.generate_btn.disabled = True
+        
+        self.log("🚀 AUTO SCAN STARTED - Will run until stopped or balance found!")
+        self.log(f"Batch size: {batch_size} keys per cycle")
+        
+        # Start scanning thread
+        thread = threading.Thread(
+            target=self._auto_scan_thread,
+            args=(batch_size,)
+        )
+        thread.daemon = True
+        thread.start()
+    
+    def stop_auto_scan_mode(self):
+        """Stop automatic scanning"""
+        self.stop_auto_scan = True
+        self.auto_scanning = False
+        
+        # Update UI
+        Clock.schedule_once(lambda dt: setattr(self.auto_scan_btn, 'text', 'AUTO SCAN'))
+        Clock.schedule_once(lambda dt: setattr(self.auto_scan_btn, 'background_color', (1, 0.5, 0, 1)))
+        Clock.schedule_once(lambda dt: setattr(self.generate_btn, 'disabled', False))
+        
+        Clock.schedule_once(lambda dt: self.log("⏹️ AUTO SCAN STOPPED"))
+    
+    def _auto_scan_thread(self, batch_size):
+        """Background thread for automatic scanning"""
+        api_key = self.api_input.text.strip() or None
+        check_balances = self.check_balance.active
+        
+        cycle = 0
+        
+        while not self.stop_auto_scan:
+            cycle += 1
+            
+            try:
+                Clock.schedule_once(lambda dt, c=cycle: self.log(f"\n--- Cycle {c} ---"))
+                
+                results = self.scanner.generate_and_check_batch(
+                    batch_size=batch_size,
+                    check_balances=check_balances,
+                    api_key=api_key,
+                    delay=0.2
+                )
+                
+                # Check for balances
+                found_balance = False
+                for result in results:
+                    if result['balance'] and result['balance'] > 0:
+                        found_balance = True
+                        msg = f"\n🎯🎯🎯 BALANCE FOUND! 🎯🎯🎯\n"
+                        msg += f"Key: {result['private_key']}\n"
+                        msg += f"Address: {result['address']}\n"
+                        msg += f"Balance: {result['balance']} ETH\n"
+                        Clock.schedule_once(lambda dt, m=msg: self.log(m))
+                        
+                        # Stop auto scan on balance found
+                        self.stop_auto_scan = True
+                        break
+                
+                if found_balance:
+                    Clock.schedule_once(lambda dt: self.log("🎉 AUTO SCAN STOPPED - BALANCE FOUND!"))
+                    break
+                
+                # Brief pause between cycles
+                time.sleep(0.5)
+                
+            except Exception as e:
+                Clock.schedule_once(lambda dt, e=str(e): self.log(f"Error: {e}"))
+                time.sleep(5)  # Wait before retrying
+        
+        # Clean up
+        self.auto_scanning = False
+        Clock.schedule_once(lambda dt: setattr(self.auto_scan_btn, 'text', 'AUTO SCAN'))
+        Clock.schedule_once(lambda dt: setattr(self.auto_scan_btn, 'background_color', (1, 0.5, 0, 1)))
+        Clock.schedule_once(lambda dt: setattr(self.generate_btn, 'disabled', False))
     
     def generate_keys(self, instance):
         """Generate keys in background thread"""
