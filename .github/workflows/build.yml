@@ -1,15 +1,13 @@
 name: Build Android APK
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     steps:
     - name: Checkout code
@@ -24,49 +22,40 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          git zip unzip openjdk-17-jdk wget \
+          git zip unzip openjdk-11-jdk wget \
           autoconf libtool pkg-config \
           zlib1g-dev libncurses5-dev libncursesw5-dev \
           libtinfo5 cmake libffi-dev libssl-dev \
-          build-essential ccache git libncurses5:i386 \
-          libstdc++6:i386 libgtk2.0-0:i386 \
-          libpangox-1.0-0:i386 libpangoxft-1.0-0:i386 \
-          libidn11:i386 python2.7 python2.7-dev \
-          openjdk-8-jdk unzip zlib1g-dev zlib1g:i386
+          build-essential libltdl-dev libffi-dev libssl-dev python3-dev
 
-    - name: Install buildozer and dependencies
+    - name: Install Cython and Buildozer
       run: |
         pip install --upgrade pip
-        pip install buildozer cython==0.29.36
+        pip install --upgrade Cython==0.29.33 buildozer
 
-    - name: Build APK with buildozer
+    - name: Cache Buildozer directory
+      uses: actions/cache@v3
+      with:
+        path: .buildozer
+        key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
+
+    - name: Build with buildozer
       run: |
+        yes | buildozer android debug || true
         buildozer android debug
-      env:
-        ANDROID_SDK_ROOT: /opt/android-sdk
-        ANDROID_HOME: /opt/android-sdk
 
-    - name: Upload APK artifact
+    - name: Upload APK
       uses: actions/upload-artifact@v4
+      if: always()
       with:
         name: eth-key-scanner-apk
         path: bin/*.apk
         retention-days: 30
 
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: bin/*.apk
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Build APK with buildozer
-      run: |
-        buildozer android debug
-
-    - name: Upload APK artifact
+    - name: Upload build logs on failure
       uses: actions/upload-artifact@v4
+      if: failure()
       with:
-        name: eth-key-scanner-apk
-        path: bin/*.apk
-        retention-days: 30
+        name: build-logs
+        path: .buildozer/android/platform/build-*/build.log
+        retention-days: 7
